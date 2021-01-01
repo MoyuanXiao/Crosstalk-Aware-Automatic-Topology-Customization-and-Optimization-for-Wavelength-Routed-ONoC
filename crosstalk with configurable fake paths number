@@ -1,0 +1,1585 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun May 24 21:07:11 2020
+
+@author: MY
+"""
+from __future__ import division
+import gurobipy as gp
+from gurobipy import GRB
+import numpy as np
+#import scipy.sparse as sp
+from os import path
+
+
+import math
+
+from datetime import datetime
+# count the run time
+start = datetime.now()
+
+# read text file
+communication_info_list = []
+
+# INPUT text file name
+
+#case_name = 'ChaEqua_07_12.txt' # one empty default
+case_name = '16.txt' # two empty defaults
+#case_name = '4x4_fake_sender_receiver.txt'
+
+
+file_path = path.relpath("D:\\Thesis\\road of the code\\test cases\\" + case_name)
+print('\n')
+print('This is the communication text file: ')
+with open(file_path) as f:
+    for line in f:
+        inner_list = [elt.strip() for elt in line.split()]
+        print(inner_list)
+        communication_info_list.append(inner_list)
+
+# INPUTS
+degree = int(communication_info_list[0][0])
+upperbound_of_wavelength_type_number = 12
+
+
+# START FROM 0
+# create a dict, port names as key, the order of the key can be re-order later. 
+communication_dict = {}
+for i in range(degree):
+    communication_dict[communication_info_list[0][i + 1]] = i
+print('\n')
+print('This is the communication matrix index dictionary: ')
+print(communication_dict)
+print('\n')
+
+# generate comm_pairs as a tuple list
+comm_pairs = []
+for i in range(1, len(communication_info_list)):
+    for j in range(2, len(communication_info_list[i])):
+        comm_pair = (communication_dict[communication_info_list[i][0]], communication_dict[communication_info_list[i][j]])
+        comm_pairs.append(comm_pair)
+print('These are the communication pairs, also the valid matrix index: ')
+print(comm_pairs)
+print('\n')
+        
+
+# Matrix generation
+# empty matrix
+communicate_matrix = np.zeros([degree, degree])
+print("This is zero matrix:")
+print(communicate_matrix)
+print('\n')
+
+# assign values to communicate_matrix
+for index in comm_pairs:
+    #print(index)
+    communicate_matrix[index] = 1
+print("This is communication matrix:")
+print(communicate_matrix)
+print('\n')
+
+
+# set lower-right MR to 2
+j = 0
+for k in range(degree - 1, 0 , -1):
+    j += 1
+    for i in range(j, degree):
+        #print([i, k])
+        if communicate_matrix[i][k]:
+            communicate_matrix[i][k] = 2        
+print("This is communicate_matrix with MR location: ")
+print(communicate_matrix)
+print('\n')
+
+
+e_1 = np.identity(communicate_matrix.shape[0], dtype=np.int8)[:,::-1]
+communicate_matrix_mirror = e_1.dot(communicate_matrix.T).dot(e_1)
+print("This is mirror matrix: ")
+print(communicate_matrix_mirror) 
+print('\n')
+print("This is added communication matrix:" )
+added = communicate_matrix + communicate_matrix_mirror
+print(added)
+print('\n')
+
+initial_topo = added
+#print('set the following position to 0.')
+
+# cut the lower part.(改过)
+j = 0
+for k in range(degree - 1, 0 , -1):
+    j += 1
+    for i in range(j, degree):
+        #print([i, k])
+        initial_topo[i][k] = 0
+print("This is added_cut matrix: ")
+print(initial_topo)
+print('\n')
+
+
+# Set diagonal 2 to 1
+diag_num = list(range(0, degree))
+diag_num_reverse = list(range(degree - 1, -1, -1))
+#print(diag_num)
+#print(diag_num_reverse)
+diag_index_list = ([])
+for i in range(0, degree):
+    diag_index = (diag_num[i], diag_num_reverse[i])
+    diag_index_list.append(diag_index)
+#print(diag_index_list)
+for j in diag_index_list:
+    if initial_topo[j]:
+        initial_topo[j] = 1
+print("This is the initial topo(diag 2 set to 1): ")
+print('1 means top-left MR, 2 means lower-right MR, 3 means both MR located.')
+print('On right diagonal, each 1 means a default communication.')
+print(initial_topo)
+print('\n')
+
+
+
+# Create communication nodes tuplelist:
+# This is different from comm-pairs
+communication_nodes_list = ([])
+for i in range(degree):
+    for j in range(degree - i):
+        if initial_topo[i, j]:
+            node = (i, j)
+            communication_nodes_list.append(node)
+print('This is all positions which have communications: ')
+print(communication_nodes_list)
+print('\n')      
+
+      
+
+# 这是Sender在左的顺序。
+# create default path matrix.
+path_list = ([])
+for path_num in range(degree):
+    #print(path_num)
+    path_list += [[]]
+    #print(path_list)
+    for i in range(degree - path_num):
+        node = (path_num, i)
+        #print(node)
+        path_list[path_num] += [node]
+    for j in range(path_num - 1, -1, -1):
+        node = (j, degree - path_num - 1)
+        #print(node)
+        path_list[path_num] += [node]
+    #print(path_list) 
+print('This is path lists matrix:')
+print(path_list)   
+print('\n') 
+    
+# only keep the nodes which has communication.
+communication_path_list = ([])
+for path_num in range(degree):
+    communication_path_list += [[]]
+    for node in range(degree):
+        if initial_topo[path_list[path_num][node]]:
+            communication_path_list[path_num] += [path_list[path_num][node]]
+print('This is the path lists only with nodes which communicates:')
+print(communication_path_list)
+print('\n')    
+
+
+# Generate the path of each communication.
+# I can count all crossings in a path or count ADFs only, see the differences.
+
+# This dictionary stores insertion loss information.
+# comm_pair as key, communication path and insertion loss as values.
+insertion_loss_dict = {}
+
+# define insertion loss value:
+# 0: -0.04dB  This can be set to 0. 
+# 1: -0.045dB
+# 2: -0.045dB
+# 3: -0.05dB
+# Don't forget drop loss -0.5dB if it is not default communication.
+
+
+# insertion_loss_value = dict(0 = 0, 1 = -0.045, 2 = -0.045, 3 = -0.05)
+insertion_loss_value = {
+        '0.0' : 0,
+        '1.0' : -0.045,
+        '2.0' : -0.045,
+        '3.0' : -0.05        
+         }
+print('This is the insertion loss value dict: ')
+print(insertion_loss_value)
+print('\n') 
+
+'''
+# count empty crossing.
+#insertion_loss_value = dict(0 = -0.04, 1 = -0.045, 2 = -0.045, 3 = -0.05)
+insertion_loss_value = {
+        '0.0' : -0.04,
+        '1.0' : -0.045,
+        '2.0' : -0.045,
+        '3.0' : -0.05        
+         }
+print(insertion_loss_value)
+'''
+
+# This is when use sharing (留上边的ring)
+# 0: -0.04dB  This can be set to 0. 
+# 1: -0.045dB
+# 2: -0.045dB
+# 3: -0.045dB
+# drop loss: if smooth, -0.5dB; if not smooth, -0.58dB.
+
+
+
+# This case 3 always has two rings, no sharing.
+# to calculate sharing case just add two crossing loss, (except default communication.) and cut some passing loss.
+# if i put sharing ring to the lower right conor, max insertion will be the same!
+
+
+
+
+# generate each upper communication and default communication as a dict, so the algorithm can pick and use directly.
+
+upper_default_comm_dict = {}
+for i in range(degree):
+    for j in range(degree -i):
+        #print([i, j])
+        comm_path = []
+        for lie_num in range(j):
+            comm_node = (i, lie_num)
+            comm_path.append(comm_node)
+        for hang_num in range(i - 1, -1, -1):
+            comm_node = (hang_num, j)
+            comm_path.append(comm_node)
+        upper_default_comm_dict[(i, j)] = comm_path
+print(upper_default_comm_dict)
+
+
+
+# pick path from upper_default_comm_dict directly.
+# use comm_pairs directly.
+for comm_pair in comm_pairs:
+    if sum(comm_pair) < (degree - 1):
+        # generate comm_path
+        comm_path = upper_default_comm_dict[comm_pair]
+        # 这个comm_path不带通信点自己。
+        #print(comm_path)
+        comm_path_num = [str(initial_topo[i]) for i in comm_path]
+        #print(comm_path_num)
+        
+        # calculate insertion loss
+        insertion_loss = 0
+        for i in comm_path_num:
+            insertion_loss += insertion_loss_value[i]
+        insertion_loss += (-0.5)
+        #print(insertion_loss)
+        insertion_loss_dict[comm_pair] = dict(comm_path = comm_path, comm_path_num = comm_path_num, insertion_loss = insertion_loss)
+        #print(insertion_loss_dict)
+        
+    if sum(comm_pair) == (degree -1):
+        comm_path = upper_default_comm_dict[comm_pair]
+        # 这个comm_path不带通信点自己。
+        #print(comm_path)
+        comm_path_num = [str(initial_topo[i]) for i in comm_path]
+        #print(comm_path_num)
+        
+         # calculate insertion loss
+        insertion_loss = 0
+        for i in comm_path_num:
+            insertion_loss += insertion_loss_value[i]
+        #print(insertion_loss)
+        insertion_loss_dict[comm_pair] = dict(comm_path = comm_path, comm_path_num = comm_path_num, insertion_loss = insertion_loss)
+        #print(insertion_loss_dict)
+    
+    
+    
+    # Some key here not saved in insertion_loss_dict yet, if that position has no communication.
+    # This is the bug.
+    if sum(comm_pair) > (degree -1):
+        # pool 里多算了一个点
+        pool = upper_default_comm_dict[(degree - 1 - comm_pair[1], comm_pair[1])] + upper_default_comm_dict[(comm_pair[0], degree - 1 - comm_pair[0])]
+        #print(pool)
+        
+        # 这个list里多了两个通信点
+        comm_path_raw = [i for i in pool if i not in upper_default_comm_dict[(degree - 1 - comm_pair[1], degree - 1 - comm_pair[0])]]
+        # cut that node
+        comm_path = [i for i in comm_path_raw if i != (degree - 1 - comm_pair[1], degree - 1 - comm_pair[0])]
+        #print(comm_path)
+        comm_path_num = [str(initial_topo[i]) for i in comm_path]
+        #print(comm_path_num)
+        
+         # calculate insertion loss
+        insertion_loss = 0
+        for i in comm_path_num:
+            insertion_loss += insertion_loss_value[i]
+        insertion_loss += (-0.5)
+        #print(insertion_loss)
+        insertion_loss_dict[comm_pair] = dict(comm_path = comm_path, comm_path_num = comm_path_num, insertion_loss = insertion_loss)
+        # print(insertion_loss_dict)
+
+
+#print(insertion_loss_dict)    
+#print('\n') 
+# find the max insertion loss
+# you can locate the pair with the worst insertion loss, maybe more than 1 pair, but for now, it is ok.
+print('This is the worst case insertion loss of the topo: ')
+print(min([insertion_loss_dict[i]['insertion_loss'] for i in comm_pairs]))
+print('\n') 
+
+        
+
+
+# The Model
+try:        
+          
+    w = gp.Model("wavelengths_usage_optimisation")
+    
+    # create a wavelength range to choose from (Here 1, 2, 3, ... 18)
+    wavelength_range = list(range(1, upperbound_of_wavelength_type_number))
+    
+    # ADD VARIABLES
+    # Add wavelength_type1 variables (take the value of 1, 2, 3, 4, 5...)
+    wavelength_type = w.addVars(communication_nodes_list, lb = 1.0, ub = len(wavelength_range), vtype = GRB.INTEGER, name = "wavelength_type")
+    w.update()
+    #print('This is wavelength_type variable')
+    #print(wavelength_type)
+    #print('\n')
+    
+    
+    # add integer variable max_wavelength_type
+    max_wavelength_type = w.addVar(lb = 1.0, ub = len(wavelength_range), vtype = GRB.INTEGER, name = "max_wavelength_type")
+    
+    
+    # Add binary variable check to check if wavelength_type1 takes a certain value.
+    #print(len(wavelength_range))
+    check = w.addVars(communication_nodes_list, wavelength_range, vtype = GRB.BINARY, name = "check")
+    w.update()
+    #print('This is the variable for check:')  
+    #print(check)
+    #print('\n')
+        
+    
+    
+    # OBJECTIVE
+    #w.setObjective(wavelength_type1.sum('*','*'), GRB.MINIMIZE)
+    #w.setObjective(max_wavelength_type + wavelength_type1.sum('*','*'), GRB.MINIMIZE)
+    w.setObjective(max_wavelength_type, GRB.MINIMIZE)
+    
+    
+    # CONSTRAINTS
+    # let max_wavelength type be the biggest number of all assigned type number
+    w.addGenConstrMax(max_wavelength_type, wavelength_type, name = "max_wavelength_type")
+    w.update()
+    
+    
+    
+    # == assign value
+    w.addConstrs(((check[(i[0], i[1], j)] == 1) >> (wavelength_type[i] == j) for i in communication_nodes_list for j in wavelength_range), "binary")
+    #w.addGenConstrIndicator(x7, True, x1 + 2*x2 + x4 == 1.0)
+    w.update()
+    
+    # each node is assigned with one wavelength
+    w.addConstrs((check.sum(i[0], i[1], '*') == 1 for i in communication_nodes_list), "assign_one_wavelength")
+    w.update()
+    
+    # all different  
+    for i in communication_path_list:
+        for k in wavelength_range:
+            alldifferent = 0
+            for j in i:
+                alldifferent += check[j[0], j[1], k]
+            w.addConstr(alldifferent <= 1, "alldifferent")
+    w.update()
+    
+    # Optimize model
+    w.optimize()
+    # w.write("first_step.lp")
+    
+    run_time_optimization = datetime.now() - start
+    
+    print('\n')
+    
+    # retrieve the number of variables in the model 
+    #print(w.numVars)
+    #print('\n')
+    # If you'd like to query the value that a variable takes in the computed solution, you can query the X attribute for the corresponding variable object:
+    
+    '''
+    # Retrieve a list of all variables in the model. 
+    for v in w.getVars():
+        print('%s %g' % (v.varName, v.x))
+        print('\n')
+    '''   
+    
+    # This routine prints all non-zero values of the specified attribute X.
+    w.printAttr('X')
+    print('\n')
+    
+    # You can also query the value of x for multiple variables in a single getAttr call on the model m:
+    # X must be big 
+    # print(w.getAttr(GRB.Attr.X, w.getVars()))
+    
+    print('Obj: %g' % w.objVal)
+    print('\n')
+    
+    
+    ###########################################################################
+    
+    # Print out the final topo together with optimisation results
+    final_topo = initial_topo
+    # try to replace the 0s with whitespaces
+    '''
+    j = 0
+    for k in range(degree - 1, 0 , -1):
+        j += 1
+        for i in range(j, degree):
+            #print([i, k])
+            str(final_topo[i][k])
+            final_topo[i][k] = ""
+    '''
+    print("This is the final topo: ")
+    print('1 means top-left MR, 2 means lower-right MR, 3 means both MR located.')
+    print('On right diagonal, each 1 means a default communication.')
+    print(final_topo)
+    print('\n')
+    
+    
+    '''
+    # shift + Tap 一起缩进       
+    # CROSSTALK
+    # multidict is probably not defined outside gurobi.
+    # create different groups outside the loop. In the loop just pick them out.
+    comm_pairs_tuplelist = gp.tuplelist(comm_pairs)
+    edge = [(i, 0) for i in range(degree - 2, -1, -1)]
+    print(edge)
+    
+    # create blocks in sequence       
+    crosstalk_blocks_dict = {}
+    n = -1
+    for j in range(degree - 1):
+        n += 1
+        for i in range(degree - 2 - n, -1, -1):
+            #print((i, j))
+            crosstalk_blocks_dict[(i, j)] = {'down': {'signal': {}, 'crosstalk': {}}, 'left': {'signal': {}, 'crosstalk': {}}, 'up': {'signal': {}, 'crosstalk': {}}, 'right': {'signal': {}, 'crosstalk': {}}}
+            # get inputs and outputs.
+            if (i, j) == (degree - 2, 0):
+                crosstalk_blocks_dict[(i, j)]['down']['signal'] = [comm_pairs_tuplelist.select(degree - 1, '*')]
+            
+            if (i, j) in edge:
+                crosstalk_blocks_dict[(i, j)]['left']['signal'] = [comm_pairs_tuplelist.select(i, '*')]
+    print(crosstalk_blocks_dict)        
+    '''
+    
+    
+    
+except gp.GurobiError as e:
+    print('Error code ' + str(e.errno) + ": " + str(e))
+
+except AttributeError:
+    print('Encountered an attribute error')
+    
+    
+run_time_total = datetime.now() - start
+    
+print('runtime_optimization: ', run_time_optimization)
+
+print('runtime_total: ', run_time_total)
+
+print('\n')
+
+
+
+
+# shift + Tap 一起缩进       
+# CROSSTALK
+# multidict is probably not defined outside gurobi.
+# create different groups outside the loop. In the loop just pick them out.
+# It also works outside the Model.
+# gurobipy is just a class, like numpy, it works everywhere as long as you import it properly. 
+# 一般出问题和版本的关系不大， 不要做大动作。 问题一般出现在细节上。
+
+'''
+# count empty crossing.
+#insertion_loss_value = dict(0 = -0.04, 1 = -0.045, 2 = -0.045, 3 = -0.05)
+insertion_loss_value = {
+        '0.0' : -0.04,
+        '1.0' : -0.045,
+        '2.0' : -0.045,
+        '3.0' : -0.05        
+         }
+print(insertion_loss_value)
+'''
+
+
+# values
+insertion_loss0 = 0.04
+insertion_loss1 = 0.045
+insertion_loss2 = 0.045
+insertion_loss3 = 0.05
+crossing_loss = 0.04
+passing_loss = 0.005
+drop_loss = 0.5
+crossing_crosstalk = 40
+resonant_crosstalk = 25
+non_resonant_crosstalk = 35
+
+
+# generate a wavelength_type dict from gurobi variables.
+# 这个code足够处理两位数的index, 三位数的还是不行， 但是三位数也碰不到。
+wavelength_type_dict = {}
+count = 0
+for item in w.getVars():
+    count += 1
+    if len(item.varName) == 20:
+        wavelength_type_dict[(int(item.varName[16]), int(item.varName[18]))] = int(item.x)
+    if len(item.varName) == 21:
+        if item.varName[18] == ',' and item.varName[20] == ']':
+            wavelength_type_dict[(int(item.varName[16:18]), int(item.varName[19]))] = int(item.x)
+        if item.varName[17] == ',' and item.varName[20] == ']':
+            wavelength_type_dict[(int(item.varName[16]), int(item.varName[18:20]))] = int(item.x)
+    if len(item.varName) == 22:
+        wavelength_type_dict[(int(item.varName[16:18]), int(item.varName[19:21]))] = int(item.x)
+    
+    if count == len(communication_nodes_list):
+        break
+print('This is wavelength_type_dict: ')
+print(wavelength_type_dict)
+print('\n')
+
+
+# test ignore fake path
+# set the fake path as the first 列。
+# fake_senders_cutout = [1]
+
+# set the fake path as the first and second 列。
+fake_senders_cutout = [1, 2]
+
+edge = [(i, len(fake_senders_cutout)) for i in range(degree - 2 - len(fake_senders_cutout), -1, -1)]
+print(edge)
+
+# create blocks in sequence       
+crosstalk_blocks_dict = {}
+n = -1
+for j in range(len(fake_senders_cutout) ,degree - 1):
+    n += 1
+    for i in range(degree - 2 - len(fake_senders_cutout) - n, -1, -1):
+        print((i, j))
+        crosstalk_blocks_dict[(i, j)] = {'down': {'signal': {}, 'crosstalk': {}}, 'left': {'signal': {}, 'crosstalk': {}}, 'up': {'signal': {}, 'crosstalk': {}}, 'right': {'signal': {}, 'crosstalk': {}}}
+        # get inputs and outputs.
+        if (i, j) == (degree - 2 - len(fake_senders_cutout), len(fake_senders_cutout)):
+            for signal in [(p, q) for p, q in comm_pairs if p == degree - 1 - len(fake_senders_cutout)]:
+                crosstalk_blocks_dict[(i, j)]['down']['signal'][signal] = 0
+        
+        if (i, j) in edge:
+            for signal in [(p, q) for p, q in comm_pairs if p == i]:
+                crosstalk_blocks_dict[(i, j)]['left']['signal'][signal] = 0
+            if i < degree - 2 - len(fake_senders_cutout):
+                crosstalk_blocks_dict[(i, j)]['down'] = crosstalk_blocks_dict[(i + 1, j)]['up']
+            
+            # calculate
+            if final_topo[(i, j)] == 0:
+                # signal
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                
+                # crosstalk
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][crosstalk] - insertion_loss0
+                # 边缘blocks的左入口应该没有crosstalk. 这两行应该是多余的, 但可以保留以增加通用度。
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][crosstalk] - insertion_loss0
+                    
+            # here you have to consider that same item is out of the index of a half matrix. Before could have the same problem.    
+            
+            if final_topo[(i, j)] == 1:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss1
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                
+
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                     # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss1
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                                                                 
+                  
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss   
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss           
+            
+
+
+            if final_topo[(i, j)] == 2:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss2
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                          
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss2
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                  
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2  
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2           
+                                      
+
+
+            if final_topo[(i, j)] == 3:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                  
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3           
+                                      
+
+
+
+
+                                  
+                 
+                 
+            '''    
+            # test 
+            print(item[0])
+            print(sum(item))
+            print(sum((1, 2)))
+            '''    
+                
+                
+                
+                
+                
+            
+            continue
+        # 右对角线锯齿内部
+        if i + j == degree - 2 and i != degree - 2 - len(fake_senders_cutout):
+            crosstalk_blocks_dict[(i, j)]['left'] = crosstalk_blocks_dict[(i, j - 1)]['right']
+            crosstalk_blocks_dict[(i, j)]['down'] = crosstalk_blocks_dict[(i + 1, j - 1)]['right']
+            
+            
+            
+            # calculate
+            if final_topo[(i, j)] == 0:
+                # signal
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                
+                # crosstalk
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][crosstalk] - insertion_loss0
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][crosstalk] - insertion_loss0
+                    
+            
+            if final_topo[(i, j)] == 1:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss1
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                
+
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                     # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss1
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                                                                 
+                
+                
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - passing_loss - crossing_loss   
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - passing_loss - crossing_loss           
+            
+                
+                
+                
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss   
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss           
+            
+
+
+            if final_topo[(i, j)] == 2:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss2
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                          
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss2
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                  
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - passing_loss
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - passing_loss            
+            
+                
+                
+                
+                
+                
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2  
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2           
+                                      
+
+
+            if final_topo[(i, j)] == 3:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - insertion_loss3
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - insertion_loss3            
+            
+                
+                
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3           
+                                      
+            
+            
+            
+            continue
+        else:
+            crosstalk_blocks_dict[(i, j)]['left'] = crosstalk_blocks_dict[(i, j - 1)]['right']
+            crosstalk_blocks_dict[(i, j)]['down'] = crosstalk_blocks_dict[(i + 1, j)]['up']
+            
+            # calculate
+            if final_topo[(i, j)] == 0:
+                # signal
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss0
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                
+                # crosstalk
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][crosstalk] - insertion_loss0
+                for crosstalk in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                    crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][crosstalk] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][crosstalk] - insertion_loss0
+                    
+            
+            if final_topo[(i, j)] == 1:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss1
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                
+
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:
+                     # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss1
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                                                                 
+                
+                
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - passing_loss - crossing_loss   
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - passing_loss - crossing_loss           
+            
+                
+                
+                
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss   
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - crossing_loss - passing_loss           
+            
+
+
+            if final_topo[(i, j)] == 2:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    # 不可能相等， 不能保留，因为信号没法处理
+                     #if item == (i, j):
+                         #crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss
+                         #crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss
+                     #if item != (i, j):
+                     crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss2
+                     if sum(item) <= (degree - 1):
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+            
+                     if sum(item) > (degree - 1):
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk
+                         if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - crossing_loss - non_resonant_crosstalk - crossing_loss) / 10)))        
+                                          
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss
+                        crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss2
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk) / 10)))        
+                    
+                  
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - passing_loss
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - drop_loss - crossing_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - crossing_loss - passing_loss            
+            
+                
+                
+                
+                
+                
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2  
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss2           
+                                      
+
+
+            if final_topo[(i, j)] == 3:
+                for item in crosstalk_blocks_dict[(i, j)]['left']['signal']:
+                    if item == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    if item != (i, j):
+                         crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['left']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                    
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['signal']:    
+                    if (degree - 1 -item[1], degree - 1 - item[0]) == (i, j):
+                        crosstalk_blocks_dict[(i, j)]['right']['signal'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - drop_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - resonant_crosstalk - crossing_loss - drop_loss - crossing_loss - passing_loss) / 10)))
+                    else:
+                         crosstalk_blocks_dict[(i, j)]['up']['signal'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - insertion_loss3
+                         if sum(item) <= (degree - 1):
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[item] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                         if sum(item) > (degree - 1):
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) > 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss
+                             if abs(wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] - wavelength_type_dict[(i, j)]) == 1:                             
+                                 crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = 10 * math.log10((10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - non_resonant_crosstalk) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_crosstalk - passing_loss) / 10)) + (10 ** ((crosstalk_blocks_dict[(i, j)]['down']['signal'][item] - passing_loss - crossing_loss - non_resonant_crosstalk - crossing_loss - passing_loss) / 10)))        
+                    
+                
+                for item in crosstalk_blocks_dict[(i, j)]['left']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - insertion_loss3
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['left']['crosstalk'][item] - insertion_loss3            
+            
+                
+                
+                    
+                for item in crosstalk_blocks_dict[(i, j)]['down']['crosstalk']:
+                     if sum(item) <= (degree - 1):
+                         if wavelength_type_dict[item] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[item] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3
+            
+                     if sum(item) > (degree - 1):
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] == wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['right']['crosstalk'][item] = crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - drop_loss
+                         if wavelength_type_dict[(degree - 1 -item[1], degree - 1 - item[0])] != wavelength_type_dict[(i, j)]:                             
+                             crosstalk_blocks_dict[(i, j)]['up']['crosstalk'][item] =  crosstalk_blocks_dict[(i, j)]['down']['crosstalk'][item] - insertion_loss3           
+                                  
+print('This is crosstalk_blocks_dict: ')        
+print(crosstalk_blocks_dict)     
+print('\n') 
+
+# output_dict
+output_dict = {}
+for port in [(0, i) for i in range(len(fake_senders_cutout), degree - 1)]:
+    output_dict[port] = crosstalk_blocks_dict[port]['up']
+output_dict[(0, degree - 1)] = crosstalk_blocks_dict[(0, degree - 2)]['right']
+print('This is the output_dict: ')
+print(output_dict)
+print('\n') 
+
+
+# SNR
+for x in output_dict:
+    crosstalk_noise_sum = 0
+    for noise in output_dict[x]['crosstalk'].values():
+        crosstalk_noise_sum += (10 ** (noise / 10))
+    output_dict[x]['crosstalk_noise_sum'] = crosstalk_noise_sum
+print(output_dict)
+print('\n')
+
+SNR_dict = {}        
+for x in output_dict:
+    for signal in output_dict[x]['signal']:
+        SNR_dict[signal] = {}
+        SNR_dict[signal]['signal_dB'] = output_dict[x]['signal'][signal]
+        SNR_dict[signal]['crosstalk_dB'] = 10 * math.log10(output_dict[x]['crosstalk_noise_sum'])
+        SNR_dict[signal]['SNR_normal'] = (10 ** (output_dict[x]['signal'][signal] / 10)) / output_dict[x]['crosstalk_noise_sum']
+        # 两种计算方式都可以
+        #SNR_dict[signal]['SNR_dB'] = 10 * math.log10(SNR_dict[signal]['SNR_normal'])
+        SNR_dict[signal]['SNR_dB'] = SNR_dict[signal]['signal_dB'] - SNR_dict[signal]['crosstalk_dB']
+print(SNR_dict)
+print('\n')
+
+# insertion loss多少根本不重要， crosstalk 必须特别小。 他的影响力在指数位置上。
+
+
+# worst case SNR
+SNR_normal_list = []
+for signal in SNR_dict:
+    SNR_normal_list.append(SNR_dict[signal]['SNR_normal'])
+print(SNR_normal_list)
+print('\n')
+'''
+SNR_dB_list = []
+for signal in SNR_dict:
+    SNR_dB_list.append(SNR_dict[signal]['SNR_dB'])
+print(SNR_dB_list)
+'''
+
+average_SNR_normal = sum(SNR_normal_list) / len(SNR_normal_list) 
+print(average_SNR_normal)
+print('\n')
+
+average_SNR_dB = 10 * math.log10(average_SNR_normal)
+print(average_SNR_dB)
+print('\n')
+
+# worst case SNR information
+for signal in SNR_dict:
+    if SNR_dict[signal]['SNR_normal'] == min(SNR_normal_list):
+        print(SNR_dict[signal])
+
+
+
+
+
+
+
+
+'''
+# debug
+print(crosstalk_blocks_dict[(2, 0)])
+'''
+
+'''
+# power
+print(pow(10,2))
+
+print(2 ** -1)
+print(10 ** 2)
+
+# 除
+print(1/2)
+
+# 乘
+print(10 * 2)
+
+# 对数
+import math
+print(math.log(100, 10))
+print(math.log10(1000))
+'''
+
+
+'''
+s = 'Don Quijote'
+a, b, c = s
+Traceback (most recent call last):
+File "", line 1, in
+This is when you get ValueError: too many values to unpack
+'''
+
+'''
+# test wavelength type.
+# it works outside the model!
+w.printAttr('X')
+
+v = w.getVars()
+print(v[0].varName, v[0].x)
+print(v[0].varName[16])
+print(type(v[0].varName))
+print(type(v[0].x))
+print(type(v[0]))
+
+print(len(communication_nodes_list))
+
+# generate a wavelength_type dict from gurobi variables.
+wavelength_type_dict = {}
+count = 0
+for item in v:
+    count += 1
+    wavelength_type_dict[item.varName] = item.x
+    if count == len(communication_nodes_list):
+        break
+print(wavelength_type_dict)
+'''   
+
+
+
+'''
+# test dict
+thisdict = {
+  "brand": "Ford",
+  "model": "Mustang",
+  "year": 1964
+}
+
+for x in thisdict:
+  print(x)
+  
+  
+for x in thisdict:
+  print(thisdict[x])
+
+for x in thisdict.values():
+  print(x)
+  
+for x, y in thisdict.items():
+  print(x, y)
+
+'''
+
+'''
+# tuplelist can't do loop.
+for (p, q) in ([comm_pairs_tuplelist.select(degree - 1, '*')]):
+    print((p, q))
+
+# change (p, q) to i    
+for i in ([comm_pairs_tuplelist.select(degree - 1, '*')]):
+    print(i)
+    
+for (p, q) in ([(3, 0), (3, 1)]):
+    print((p, q))
+
+for i in ([(3, 0), (3, 1)]):
+    print(i)
+'''
+
+'''
+# test pick value from final topo
+print(final_topo[(2, 0)])
+    
+'''
+
+'''
+
+# test elif
+# elif only works when the first if doesn't fit. If the first if hits, elif will be skipped.
+a = 32
+b = 33
+c = 21
+if b > a:
+  print("b is greater than a")
+elif a > c:
+  print("a is greater than c")
+  
+a = 32
+b = 33
+c = 21
+if b > a:
+  print("b is greater than a")
+if a > c:
+  print("a is greater than c")
+
+
+a = 200
+b = 33
+if b > a:
+  print("b is greater than a")
+elif a == b:
+  print("a and b are equal")
+else:
+  print("a is greater than b")
+
+# else catches all other cases, can be used without elif.  
+a = 200
+b = 33
+if b > a:
+  print("b is greater than a")
+if a == b:
+  print("a and b are equal")
+else:
+  print("a is greater than b")
+  
+a = 200
+b = 33
+if b > a:
+  print("b is greater than a")
+if a == b:
+  print("a and b are equal")
+if a > b:
+  print("a is greater than b")
+
+
+'''
+
+'''
+# test multidict
+# The multidict function allows you to initialize one or more dictionaries in a single statement.
+names, lower, upper = gp.multidict({ 'x': [0, 1], 'y': [1, 2], 'z': [0, 3] }) 
+print(names)
+
+arcs, capacity = gp.multidict({ ('Detroit', 'Boston'): 100, ('Detroit', 'New York'): 80})
+print(arcs)
+print(capacity)
+print(arcs, capacity)
+
+'''
+
+
+'''
+# test select
+# select is an attribute in gurobipy tuplelist, so you have to do gp. tuplelist, to use that class.
+l = gp. tuplelist([(1, 2), (1, 3), (2, 3), (2, 4)])
+print(l.select(1, '*'))
+'''
+
+    
+
+'''
+# test range 
+# This loops in a tuple!
+for i in (5, -1, -1):
+    print(i)
+        
+     
+for i in range(5, -1, -1):
+    print(i)
+'''        
+
+'''
+# test
+for j in range(-2, -1, -1):
+    print(j)
+'''
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -7,4 +7,4 @@ However, the code faithfully implements the core concepts and algorithms present
 Skilled programmers with expertise in optimization may be able to achieve superior performance. Based on my current skill set, I am confident that the performance could be improved by an additional 1-3x beyond the significant speed-ups already detailed in the paper.
 
 Disclaimer:
-Please use this code with caution. Due to the time that has passed, I cannot guarantee that this version will compile or run correctly, nor can I confirm if it contains every component from the final paper. I unfortunately do not have the time to validate it.
+Please use this code with caution. Due to the time that has passed, I cannot guarantee that this version will compile or run correctly, nor can I confirm if it contains every component from the final paper. This code is likely not the final version described in the paper! I unfortunately do not have the time to validate it.
